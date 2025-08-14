@@ -2,13 +2,17 @@
 #include <iostream>
 #include <wrl.h>
 #include <d3d12.h>
-#include "include/d3dx12/d3dx12.h" // Consider including only necessary parts.  Many prefer not to use this wholesale.
+#include "include/d3dx12/d3dx12.h"
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 #include <chrono>
 #include <vector>
 #include <stdexcept>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 
 using namespace Microsoft::WRL;
 using namespace DirectX;
@@ -17,6 +21,8 @@ using namespace DirectX;
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dxguid.lib")
+
 
 // Forward declarations
 void UpdateAndRender();
@@ -36,20 +42,74 @@ const UINT FrameCount = 2;
 // Vertex structure
 struct Vertex {
     XMFLOAT3 position;
-    XMFLOAT3 color;
+    XMFLOAT2 texCoord;
 };
 
 // Cube data
 Vertex cubeVertices[] = {
-    {{-1,-1,-1}, {1,0,0}}, {{-1, 1,-1}, {0,1,0}}, {{1, 1,-1}, {0,0,1}}, {{1,-1,-1}, {1,1,0}},
-    {{-1,-1, 1}, {1,0,1}}, {{-1, 1, 1}, {0,1,1}}, {{1, 1, 1}, {1,1,1}}, {{1,-1, 1}, {0,0,0}},
+    // +X
+    {{+1, -1, -1}, {0, 1}}, // 0
+    {{+1, +1, -1}, {0, 0}}, // 1
+    {{+1, +1, +1}, {1, 0}}, // 2
+    {{+1, -1, +1}, {1, 1}}, // 3
+
+    // -X
+    {{-1, -1, +1}, {0, 1}}, // 4
+    {{-1, +1, +1}, {0, 0}}, // 5
+    {{-1, +1, -1}, {1, 0}}, // 6
+    {{-1, -1, -1}, {1, 1}}, // 7
+
+    // +Y
+    {{-1, +1, -1}, {0, 1}}, // 8
+    {{-1, +1, +1}, {0, 0}}, // 9
+    {{+1, +1, +1}, {1, 0}}, //10
+    {{+1, +1, -1}, {1, 1}}, //11
+
+    // -Y
+    {{-1, -1, +1}, {0, 1}}, //12
+    {{-1, -1, -1}, {0, 0}}, //13
+    {{+1, -1, -1}, {1, 0}}, //14
+    {{+1, -1, +1}, {1, 1}}, //15
+
+    // +Z
+    {{+1, -1, +1}, {0, 1}}, //16
+    {{+1, +1, +1}, {0, 0}}, //17
+    {{-1, +1, +1}, {1, 0}}, //18
+    {{-1, -1, +1}, {1, 1}}, //19
+
+    // -Z
+    {{-1, -1, -1}, {0, 1}}, //20
+    {{-1, +1, -1}, {0, 0}}, //21
+    {{+1, +1, -1}, {1, 0}}, //22
+    {{+1, -1, -1}, {1, 1}}, //23
 };
 
 uint16_t cubeIndices[] = {
-    0,1,2, 0,2,3,  4,6,5, 4,7,6,
-    4,5,1, 4,1,0,  3,2,6, 3,6,7,
-    1,5,6, 1,6,2,  4,0,3, 4,3,7,
+    // +X
+    0, 1, 2,
+    0, 2, 3,
+
+    // -X
+    4, 5, 6,
+    4, 6, 7,
+
+    // +Y
+    8, 9,10,
+    8,10,11,
+
+    // -Y
+   12,13,14,
+   12,14,15,
+
+   // +Z
+  16,17,18,
+  16,18,19,
+
+  // -Z
+ 20,21,22,
+ 20,22,23,
 };
+
 
 // Globals (Consider minimizing these)
 HWND hwnd = nullptr;
@@ -81,6 +141,8 @@ D3D12_INDEX_BUFFER_VIEW indexBufferView;
 ComPtr<ID3D12DescriptorHeap> shaderVisibleHeap;
 ComPtr<ID3D12Resource> constantBuffer;
 D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+ComPtr<ID3D12Resource> texture;
+D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 
 // Timer
 std::chrono::steady_clock::time_point startTime;
@@ -169,7 +231,7 @@ void LoadAssets() {
     {
 		// Create a descriptor heap for the constant buffer view
 		D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc = {};
-		cbvHeapDesc.NumDescriptors = 1;
+		cbvHeapDesc.NumDescriptors = 100;
 		cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		ThrowIfFailed(device->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&shaderVisibleHeap)));
@@ -187,6 +249,82 @@ void LoadAssets() {
 		cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress();
 		cbvDesc.SizeInBytes = bufferSize;
 		device->CreateConstantBufferView(&cbvDesc, shaderVisibleHeap->GetCPUDescriptorHandleForHeapStart());
+
+        // Load texture
+		int width, height, channels;
+		unsigned char* imageData = stbi_load("block.png", &width, &height, &channels, 4);
+		if (!imageData) {
+			throw std::runtime_error("Failed to load texture image");
+		}
+
+		// Create texture resource
+		D3D12_RESOURCE_DESC textureDesc = {};
+		textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		textureDesc.Width = width;
+		textureDesc.Height = height;
+		textureDesc.DepthOrArraySize = 1;
+		textureDesc.MipLevels = 1;
+		textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		textureDesc.SampleDesc.Count = 1;
+		textureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+		auto heapPropsTexture = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+		ThrowIfFailed(device->CreateCommittedResource(
+			&heapPropsTexture, D3D12_HEAP_FLAG_NONE,
+			&textureDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture)));
+
+        const UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.Get(), 0, 1);
+
+		ComPtr<ID3D12Resource> textureUploadHeap;
+
+        // Create the GPU upload buffer.
+        auto textureUploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        auto textureUploadResourceDescription = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
+        ThrowIfFailed(device->CreateCommittedResource(
+            &textureUploadHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &textureUploadResourceDescription,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&textureUploadHeap)));
+
+		// Copy image data to the texture
+		D3D12_SUBRESOURCE_DATA subresourceData = {};
+		subresourceData.pData = imageData;
+		subresourceData.RowPitch = width * 4; // 4 bytes per pixel
+		subresourceData.SlicePitch = subresourceData.RowPitch * height;
+
+		// Create a command list for copying the data
+		ComPtr<ID3D12GraphicsCommandList> copyCommandList;
+		ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&copyCommandList)));
+		UpdateSubresources(copyCommandList.Get(), texture.Get(), textureUploadHeap.Get(), 0, 0, 1, &subresourceData);
+        auto textureResourceBarrier = CD3DX12_RESOURCE_BARRIER::Transition(texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        copyCommandList->ResourceBarrier(1, &textureResourceBarrier);
+		ThrowIfFailed(copyCommandList->Close());
+		ID3D12CommandList* ppCommandLists[] = { copyCommandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+		// wait for the command queue to finish
+		ComPtr<ID3D12Fence> fence;
+		HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+		uint32_t copyFenceValue = 0;
+		ThrowIfFailed(device->CreateFence(copyFenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+		commandQueue->Signal(fence.Get(), copyFenceValue);
+        if (fence->GetCompletedValue() < copyFenceValue) {
+            ThrowIfFailed(fence->SetEventOnCompletion(copyFenceValue, fenceEvent));
+            WaitForSingleObject(fenceEvent, INFINITE);
+        }
+		CloseHandle(fenceEvent);
+		stbi_image_free(imageData); // Free the image data after copying
+
+		// Create the shader resource view for the texture
+		srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+		auto srvHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(shaderVisibleHeap->GetCPUDescriptorHandleForHeapStart(), 1, device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV));
+		device->CreateShaderResourceView(texture.Get(), &srvDesc, srvHandle);
     }
 }
 
@@ -300,38 +438,48 @@ void LoadShaderPipeline() {
     ThrowIfFailed(D3DCompileFromFile(L"shader.hlsl", nullptr, nullptr, "PSMain", "ps_5_1", 0, 0, &ps, nullptr));
 
     // Root signature: root constant for MVP
-    D3D12_ROOT_PARAMETER rootParams[3] = {};
+    D3D12_ROOT_PARAMETER rootParams[1] = {};
 
-	// [The first MVP]
-    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    rootParams[0].Constants.Num32BitValues = 16;
-    rootParams[0].Constants.ShaderRegister = 0;
-	rootParams[0].Constants.RegisterSpace = 0;
+    // MVP
+    D3D12_DESCRIPTOR_RANGE range[2] = {};
+    range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    range[0].NumDescriptors = 1;
+    range[0].BaseShaderRegister = 0;
+    range[0].RegisterSpace = 0;
+    range[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-	// [The second MVP]
-    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    rootParams[1].Descriptor.ShaderRegister = 1;
-    rootParams[1].Descriptor.RegisterSpace = 0;
+    range[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    range[1].NumDescriptors = 1;
+    range[1].BaseShaderRegister = 0;
+    range[1].RegisterSpace = 0;
+    range[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-	// [The third MVP]
-    D3D12_DESCRIPTOR_RANGE range = {};
-    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-    range.NumDescriptors = 1;
-    range.BaseShaderRegister = 2;
-    range.RegisterSpace = 0;
-    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+	rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+	rootParams[0].DescriptorTable.NumDescriptorRanges = 2;
+	rootParams[0].DescriptorTable.pDescriptorRanges = range;
 
-	rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-	rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-	rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-	rootParams[2].DescriptorTable.pDescriptorRanges = &range;
+    D3D12_STATIC_SAMPLER_DESC staticSampler = {};
+    staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSampler.MipLODBias = 0;
+    staticSampler.MaxAnisotropy = 1;
+    staticSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    staticSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    staticSampler.MinLOD = 0.0f;
+    staticSampler.MaxLOD = D3D12_FLOAT32_MAX;
+    staticSampler.ShaderRegister = 0;        // register(s0)
+    staticSampler.RegisterSpace = 0;
+    staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 3;
+    rootSigDesc.NumParameters = 1;
     rootSigDesc.pParameters = rootParams;
+    rootSigDesc.NumStaticSamplers = 1;
+	rootSigDesc.pStaticSamplers = &staticSampler;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> sigBlob;
@@ -340,8 +488,8 @@ void LoadShaderPipeline() {
 
     // Input layout
     D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 
     // Pipeline State Object
@@ -420,20 +568,20 @@ void UpdateAndRender() {
     XMMATRIX mvp = model * view * proj;
 
     // [The first MVP]
-    commandList->SetGraphicsRoot32BitConstants(0, sizeof(DirectX::XMMATRIX) / 4, &mvp, 0);
+    //commandList->SetGraphicsRoot32BitConstants(0, sizeof(DirectX::XMMATRIX) / 4, &mvp, 0);
 
 	// [The second MVP]
-	UINT8* pData;
-	ThrowIfFailed(constantBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pData)));
-	memcpy(pData, &mvp, sizeof(XMMATRIX));
-	constantBuffer->Unmap(0, nullptr);
-	commandList->SetGraphicsRootConstantBufferView(1, constantBuffer->GetGPUVirtualAddress());
+	 UINT8* pData;
+	 ThrowIfFailed(constantBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pData)));
+	 memcpy(pData, &mvp, sizeof(XMMATRIX));
+	 constantBuffer->Unmap(0, nullptr);
+	// commandList->SetGraphicsRootConstantBufferView(1, constantBuffer->GetGPUVirtualAddress());
 
 	// [The third MVP]
 	ID3D12DescriptorHeap* heaps[] = { shaderVisibleHeap.Get() };
 	commandList->SetDescriptorHeaps(1, heaps);
 	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = shaderVisibleHeap->GetGPUDescriptorHandleForHeapStart();
-	commandList->SetGraphicsRootDescriptorTable(2, gpuHandle);
+	commandList->SetGraphicsRootDescriptorTable(0, gpuHandle);
 
     // Draw
     commandList->DrawIndexedInstanced(_countof(cubeIndices), 1, 0, 0, 0);
