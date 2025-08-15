@@ -33,27 +33,6 @@ const UINT Width = 800;
 const UINT Height = 600;
 const UINT FrameCount = 2;
 
-// The compute shader source code is inlined as a string.
-// This shader simply generates a color based on the thread ID and time.
-const char* g_computeShader = R"(
-RWTexture2D<float4> OutputTexture : register(u0);
-cbuffer TimeConstants : register(b0)
-{
-    float Time;
-};
-
-[numthreads(8, 8, 1)]
-void CSMain(uint3 id : SV_DispatchThreadID)
-{
-    float2 uv = (float2)id.xy / (float2)800.0f;
-    float r = abs(sin(uv.x * 20.0f + Time));
-    float g = abs(cos(uv.y * 20.0f - Time));
-    float b = sin(uv.x * uv.y * 50.0f + Time * 2.0f);
-
-    OutputTexture[id.xy] = float4(r, g, b, 1.0f);
-}
-)";
-
 // Globals
 HWND hwnd = nullptr;
 ComPtr<ID3D12Device> device;
@@ -207,7 +186,7 @@ void Initialize() {
 void LoadShaderPipeline() {
     // Compile the compute shader from the inlined string
     ComPtr<ID3DBlob> cs;
-    ThrowIfFailed(D3DCompile(g_computeShader, strlen(g_computeShader), nullptr, nullptr, nullptr, "CSMain", "cs_5_1", 0, 0, &cs, nullptr));
+    ThrowIfFailed(D3DCompileFromFile(L"shader.hlsl", nullptr, nullptr, "CSMain", "cs_5_1", 0, 0, &cs, nullptr));
 
     // Create a root signature
     CD3DX12_DESCRIPTOR_RANGE range = {};
